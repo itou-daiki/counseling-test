@@ -20,49 +20,46 @@ def detect_risk_level(text):
 # --- 2. UI設計（モバイル最適化） ---
 st.set_page_config(page_title="心の相談室", page_icon="🤝", layout="centered")
 
-# カスタムCSSでスマホでの表示を微調整
+# CSSの修正（unsafe_allow_html=True に修正済み）
 st.markdown("""
     <style>
-    .reportview-container .main .block-container { padding-top: 1rem; }
-    .stButton>button { width: 100%; border-radius: 20px; }
+    .stApp { max-width: 800px; margin: 0 auto; }
+    .stButton>button { width: 100%; border-radius: 20px; height: 3em; margin-top: 10px; }
+    .stChatMessage { border-radius: 15px; }
     </style>
-    """, unsafe_allow_index=True)
+    """, unsafe_allow_html=True)
 
 st.title("🤝 心の相談室")
 
-# サイドバーの代わりに、上部のExpanderに設定を集約
-with st.expander("⚙️ 初期設定・使い方（まずここを開いてください）", expanded=False):
-    st.markdown("### 1. APIキーの入力")
-    api_key = st.text_input("Gemini API Key", type="password", help="Google AI Studioで発行したキーを入力")
-    
-    st.markdown("### 2. キーの取得方法")
-    st.markdown("[👉 Google AI Studioで取得（無料）](https://aistudio.google.com/app/apikey)")
+# 上部の設定メニュー
+with st.expander("⚙️ 初期設定・使い方", expanded=False):
+    st.markdown("### APIキーの設定")
+    api_key = st.text_input("Gemini API Key", type="password")
+    st.markdown("[👉 APIキーを取得する（Google AI Studio）](https://aistudio.google.com/app/apikey)")
     
     st.divider()
     if st.button("会話をリセットして最初から話す"):
         st.session_state.clear()
         st.rerun()
 
-# APIキーがない場合の表示
+# APIキーチェック
 if not api_key:
-    st.info("上の「初期設定」メニューを開き、APIキーを入力すると相談を開始できます。")
+    st.info("上の「初期設定」メニューを開き、APIキーを入力してください。")
     st.stop()
 
-# モデルの固定設定
+# モデル設定
 genai.configure(api_key=api_key)
 MODEL_ID = "gemini-2.5-flash"
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
-if "analysis_log" not in st.session_state:
-    st.session_state.analysis_log = []
 
 # チャット履歴の表示
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# --- 3. カウンセリング・ロジック ---
+# --- 3. メインロジック ---
 
 if prompt := st.chat_input("今、どんなお気持ちですか？"):
     st.chat_message("user").markdown(prompt)
@@ -70,7 +67,7 @@ if prompt := st.chat_input("今、どんなお気持ちですか？"):
 
     risk_level = detect_risk_level(prompt)
 
-    # プロフェッショナル・カウンセラーのプロンプト
+    # プロフェッショナル・カウンセラー・プロンプト
     system_instruction = f"""
     あなたは、経験豊富なスクールカウンセラーです。
     来談者中心療法とマイクロカウンセリングの技法を使い、相談者が安心して話せる場を作ってください。
@@ -85,8 +82,7 @@ if prompt := st.chat_input("今、どんなお気持ちですか？"):
 
     【出力形式：必ずJSONのみ】
     {{
-        "analysis": "相談者の心理状態の短い分析",
-        "needs": "傾聴/改善策/共考",
+        "analysis": "心理状態の分析",
         "reply": "カウンセラーとしての返答"
     }}
     """
@@ -98,7 +94,7 @@ if prompt := st.chat_input("今、どんなお気持ちですか？"):
         )
 
         with st.chat_message("assistant"):
-            # 文脈を保持した対話
+            # 過去の履歴を含めて会話
             chat = model.start_chat(history=[
                 {"role": m["role"], "parts": [m["content"]]} for m in st.session_state.messages[:-1]
             ])
@@ -109,28 +105,31 @@ if prompt := st.chat_input("今、どんなお気持ちですか？"):
             )
             
             res_data = json.loads(response.text)
-            analysis = res_data.get("analysis", "")
-            reply_text = res_data.get("reply", "...")
+            reply_text = res_data.get("reply", "申し訳ありません。もう一度お話しいただけますか？")
 
             st.markdown(reply_text)
             
-            # リスク対応UI
+            # リスク対応
             if risk_level >= 4:
                 st.error("⚠️ 大切なあなたへ：一人で抱え込まないでください。")
                 st.info("24時間子供SOSダイヤル: 0120-0-78310")
 
             st.session_state.messages.append({"role": "assistant", "content": reply_text})
-            st.session_state.analysis_log.append(analysis)
 
     except Exception as e:
-        st.error("接続が不安定です。少し待ってから再度お話しください。")
+        st.error(f"接続エラーが発生しました。時間を置いてから再度お試しください。")
+        # 詳細なエラーをデバッグ用に隠しておく
+        with st.expander("エラー詳細"):
+            st.write(str(e))
 
-# --- 4. セッションのまとめ機能 ---
-if len(st.session_state.messages) > 4:
+# セッションが長くなった場合のサマリー機能
+if len(st.session_state.messages) > 6:
     st.divider()
-    if st.button("今日の対話を振り返る（カウンセリング・ノート作成）"):
-        summary_prompt = "これまでの対話内容を要約し、相談者が自分自身を振り返るための温かいメッセージを作成してください。"
-        summary_model = genai.GenerativeModel(model_name=MODEL_ID)
-        summary_res = summary_model.generate_content(f"履歴: {str(st.session_state.messages)}\n指示: {summary_prompt}")
-        st.success("📝 今日のカウンセリング・ノート")
-        st.write(summary_res.text)
+    if st.button("📝 今日の相談を振り返る"):
+        with st.status("カウンセリング・ノートを作成中..."):
+            summary_model = genai.GenerativeModel(model_name=MODEL_ID)
+            summary_res = summary_model.generate_content(
+                f"以下の対話から、相談者の頑張りや変化を認める温かい要約を作成してください。\n対話履歴: {str(st.session_state.messages)}"
+            )
+            st.success("今日のまとめ")
+            st.write(summary_res.text)
