@@ -2,7 +2,7 @@ import streamlit as st
 import google.generativeai as genai
 import json
 
-# --- 1. 定数・設定 ---
+# --- 1. 設定・リスクキーワード ---
 RISK_KEYWORDS = {
     5: ["死にたい", "自殺", "消えたい", "殺す", "自傷", "リスカ", "終わりにしたい"],
     4: ["学校に行けない", "不登校", "いじめ", "暴力", "虐待", "親に殴られる", "限界", "眠れない"],
@@ -11,107 +11,112 @@ RISK_KEYWORDS = {
     1: []
 }
 
-# --- 2. ロジック関数 ---
-
 def detect_risk_level(text):
-    """キーワードに基づいたリスク判定（即時判断用）"""
+    """キーワードによる即時リスク判定"""
     for level in range(5, 0, -1):
         if any(keyword in text for keyword in RISK_KEYWORDS.get(level, [])):
             return level
     return 1
 
-# --- 3. UI (Streamlit) ---
-
+# --- 2. UI実装 ---
 st.set_page_config(page_title="安心相談チャット", page_icon="🌱")
 
 with st.sidebar:
     st.header("⚙️ 設定")
-    # ユーザーがAPIキーを入力
     api_key = st.text_input("Gemini API Key", type="password")
     
     st.divider()
-    st.markdown("### 🔑 APIキーの取得先")
-    # APIキー取得先リンクの表示
-    st.markdown("[Google AI Studioでキーを取得する](https://aistudio.google.com/app/apikey)")
-    st.info("上記リンクからGoogleアカウントでログインし、『Get API key』をクリックして発行してください。")
+    st.markdown("### 🔑 APIキーの取得")
+    st.markdown("[Google AI Studioで取得](https://aistudio.google.com/app/apikey)")
     
-    if st.button("会話をリセット"):
+    # モデル選択の動的化（404回避のため）
+    st.divider()
+    model_option = st.selectbox(
+        "使用モデルの選択",
+        ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-flash-8b"],
+        index=0,
+        help="最新の2.0-flashを推奨します。エラーが出る場合は1.5系を試してください。"
+    )
+
+    if st.button("会話履歴をリセット"):
         st.session_state.messages = []
         st.rerun()
 
 st.title("🌱 安心相談チャット")
-st.caption("あなたの今の気持ちを、誰にも気兼ねせず話してみてください。")
+st.caption("2026年度版：最新のGemini 2.0エンジンを搭載した学生相談システム")
 
 if not api_key:
-    st.warning("左側のサイドバーにAPIキーを入力してください。")
+    st.warning("サイドバーにAPIキーを入力してください。")
     st.stop()
 
-# モデル設定（1.5-flashは無料枠制限が比較的緩やかです）
+# APIの初期化
 genai.configure(api_key=api_key)
-model_name = "gemini-1.5-flash" 
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+# チャット履歴表示
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# --- 4. 対話・分析処理 ---
-
-if prompt := st.chat_input("どうしましたか？"):
+# --- 3. メインロジック ---
+if prompt := st.chat_input("今、どんなことを考えていますか？"):
+    # ユーザー入力を表示
     st.chat_message("user").markdown(prompt)
     st.session_state.messages.append({"role": "user", "content": prompt})
 
-    # ルールベースのリスク判定
+    # リスクレベルの判定
     risk_level = detect_risk_level(prompt)
 
-    # 1回のリクエストで判定と回答を両方行うためのシステムプロンプト
+    # 1回のリクエストで「分析」と「回答」を同時に行うシステムプロンプト
     system_instruction = f"""
     あなたは温かいプロのスクールカウンセラーです。
     
-    【重要ルール】
-    1. 相談者の発言から「ニーズ（傾聴・改善策・共考）」を分析してください。
-    2. 現在のリスクレベルは「レベル{risk_level}」です。
-    3. レベル4以上の場合は、寄り添いつつも専門機関への相談を促してください。
-    4. 出力は必ず以下のJSON形式のみとし、他の文章は含めないでください。
+    【厳守事項】
+    1. 相談者のニーズ（傾聴・改善策・共考）を文脈から分析してください。
+    2. 現在のリスクレベルは「{risk_level}」です。
+    3. レベル4以上の場合は、専門窓口（24時間子供SOS等）への相談を優しく勧めてください。
+    4. 出力は以下のJSON形式のみとし、余計な説明は省いてください。
     {{
         "needs": "傾聴 または 改善策 または 共考",
-        "reply": "相談者への返答文章"
+        "reply": "相談者への親身な回答（5段階のリスクに応じたトーン）"
     }}
     """
 
-    model = genai.GenerativeModel(
-        model_name=model_name,
-        system_instruction=system_instruction
-    )
+    try:
+        # モデルの構築
+        model = genai.GenerativeModel(
+            model_name=model_option,
+            system_instruction=system_instruction
+        )
 
-    with st.chat_message("assistant"):
-        response_placeholder = st.empty()
-        
-        try:
-            # APIリクエスト（JSONモード指定）
+        with st.chat_message("assistant"):
+            # JSONモードで生成
             response = model.generate_content(
                 prompt,
                 generation_config={"response_mime_type": "application/json"}
             )
             
-            # 結果をパース
+            # 結果の解析と表示
             res_data = json.loads(response.text)
-            reply_text = res_data.get("reply", "うまくお答えできませんでした。もう一度お話しいただけますか？")
+            reply_text = res_data.get("reply", "...")
             
-            # 回答を表示
-            response_placeholder.markdown(reply_text)
+            st.markdown(reply_text)
             
-            # リスクが高い場合の追加表示
+            # リスクレベルが高い場合の補助UI
             if risk_level >= 4:
-                st.error("⚠️ 一人で抱え込まず、以下の窓口も検討してみてください。")
-                st.markdown("- **24時間子供SOSダイヤル**: 0120-0-78310\n- **[SNS相談窓口](https://www.mhlw.go.jp/mamoruchat/)**")
+                st.error("⚠️ 一人で抱え込まずに、相談してみませんか？")
+                st.info("24時間子供SOSダイヤル: 0120-0-78310")
 
+            # 履歴に保存
             st.session_state.messages.append({"role": "assistant", "content": reply_text})
 
-        except Exception as e:
-            if "429" in str(e):
-                st.error("【混雑エラー】APIの利用制限に達しました。1分ほど待ってから再度送信してください。")
-            else:
-                st.error(f"エラーが発生しました: {str(e)}")
+    except Exception as e:
+        error_msg = str(e)
+        if "404" in error_msg:
+            st.error(f"モデル '{model_option}' が見つかりませんでした。サイドバーで別のモデルを選択するか、ライブラリを更新してください。")
+        elif "429" in error_msg:
+            st.error("混雑しています。1分ほど待ってから再度送信してください。")
+        else:
+            st.error(f"予期せぬエラーが発生しました: {error_msg}")
